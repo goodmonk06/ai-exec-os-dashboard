@@ -10,6 +10,10 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ============================================================================
+// ENUMS
+// ============================================================================
+
 enum AgentStatus {
   active
   inactive
@@ -19,6 +23,7 @@ enum AgentStatus {
 enum WorkflowStatus {
   active
   inactive
+  archived
 }
 
 enum JobStatus {
@@ -26,18 +31,71 @@ enum JobStatus {
   running
   completed
   failed
+  cancelled
 }
 
+enum ExecutionStatus {
+  success
+  failure
+  timeout
+  cancelled
+}
+
+enum NotificationChannel {
+  email
+  slack
+  webhook
+  console
+}
+
+enum NotificationStatus {
+  pending
+  sent
+  failed
+}
+
+enum AuditAction {
+  create
+  update
+  delete
+  execute
+  trigger
+  cancel
+}
+
+enum StepType {
+  agent_execution
+  api_call
+  data_transform
+  condition
+  parallel
+  wait
+}
+
+// ============================================================================
+// CORE ENTITIES
+// ============================================================================
+
 model Agent {
-  id        String      @id @default(cuid())
-  name      String
-  type      String
-  status    AgentStatus @default(active)
-  config    Json?
-  createdAt DateTime    @default(now())
-  updatedAt DateTime    @updatedAt
+  id          String        @id @default(cuid())
+  name        String
+  type        String
+  description String?
+  status      AgentStatus   @default(active)
+  config      Json?
+  metadata    Json?
+  version     String        @default("1.0.0")
+  createdBy   String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  // Relationships
+  executions  AgentExecution[]
+  tags        AgentTag[]
 
   @@index([status])
+  @@index([type])
+  @@index([createdAt])
 }
 
 model Workflow {
@@ -46,11 +104,19 @@ model Workflow {
   description String
   status      WorkflowStatus @default(active)
   config      Json?
+  metadata    Json?
+  version     String         @default("1.0.0")
+  createdBy   String?
   createdAt   DateTime       @default(now())
   updatedAt   DateTime       @updatedAt
+
+  // Relationships
   jobs        Job[]
+  steps       WorkflowStep[]
+  tags        WorkflowTag[]
 
   @@index([status])
+  @@index([createdAt])
 }
 
 model Job {
@@ -58,16 +124,209 @@ model Job {
   workflowId   String
   workflowName String
   status       JobStatus @default(pending)
+  priority     Int       @default(0)
   startedAt    DateTime?
   completedAt  DateTime?
+  duration     Int?      // milliseconds
   error        String?
   result       Json?
+  metadata     Json?
+  retryCount   Int       @default(0)
+  maxRetries   Int       @default(3)
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
-  workflow Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  // Relationships
+  workflow      Workflow        @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  stepExecutions StepExecution[]
+  notifications Notification[]
+  tags          JobTag[]
 
   @@index([status])
   @@index([workflowId])
   @@index([createdAt])
+  @@index([priority])
+}
+
+// ============================================================================
+// EXECUTION & HISTORY
+// ============================================================================
+
+model AgentExecution {
+  id          String          @id @default(cuid())
+  agentId     String
+  agentName   String
+  status      ExecutionStatus
+  input       Json?
+  output      Json?
+  error       String?
+  duration    Int?            // milliseconds
+  resourceUsage Json?         // CPU, memory, etc.
+  metadata    Json?
+  startedAt   DateTime        @default(now())
+  completedAt DateTime?
+  createdAt   DateTime        @default(now())
+
+  // Relationships
+  agent       Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([agentId])
+  @@index([status])
+  @@index([startedAt])
+}
+
+model WorkflowStep {
+  id          String   @id @default(cuid())
+  workflowId  String
+  name        String
+  description String?
+  type        StepType
+  order       Int      // execution order
+  config      Json?    // step-specific configuration
+  condition   String?  // conditional execution expression
+  retryPolicy Json?    // retry configuration
+  timeout     Int?     // milliseconds
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relationships
+  workflow    Workflow        @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  executions  StepExecution[]
+
+  @@unique([workflowId, order])
+  @@index([workflowId])
+}
+
+model StepExecution {
+  id          String          @id @default(cuid())
+  jobId       String
+  stepId      String
+  stepName    String
+  status      ExecutionStatus
+  input       Json?
+  output      Json?
+  error       String?
+  duration    Int?            // milliseconds
+  retryCount  Int             @default(0)
+  startedAt   DateTime        @default(now())
+  completedAt DateTime?
+  createdAt   DateTime        @default(now())
+
+  // Relationships
+  job   Job          @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  step  WorkflowStep @relation(fields: [stepId], references: [id], onDelete: Cascade)
+
+  @@index([jobId])
+  @@index([stepId])
+  @@index([status])
+}
+
+// ============================================================================
+// NOTIFICATIONS
+// ============================================================================
+
+model Notification {
+  id          String             @id @default(cuid())
+  jobId       String?
+  channel     NotificationChannel
+  status      NotificationStatus @default(pending)
+  recipient   String             // email, slack channel, webhook URL
+  subject     String?
+  message     String
+  metadata    Json?
+  sentAt      DateTime?
+  error       String?
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  // Relationships
+  job Job? @relation(fields: [jobId], references: [id], onDelete: SetNull)
+
+  @@index([jobId])
+  @@index([status])
+  @@index([channel])
+  @@index([createdAt])
+}
+
+// ============================================================================
+// AUDIT & COMPLIANCE
+// ============================================================================
+
+model AuditLog {
+  id          String      @id @default(cuid())
+  entityType  String      // Agent, Workflow, Job, etc.
+  entityId    String
+  action      AuditAction
+  actorId     String?     // user or system ID
+  actorType   String?     // user, system, api_key
+  changes     Json?       // before/after state
+  metadata    Json?
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime    @default(now())
+
+  // Note: Polymorphic relationship managed at application level
+  // entityType + entityId determine the related entity
+
+  @@index([entityType, entityId])
+  @@index([actorId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+// ============================================================================
+// TAGGING SYSTEM
+// ============================================================================
+
+model Tag {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  color       String?  // hex color for UI
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relationships
+  agents      AgentTag[]
+  workflows   WorkflowTag[]
+  jobs        JobTag[]
+
+  @@index([name])
+}
+
+// Join tables for many-to-many relationships
+model AgentTag {
+  agentId   String
+  tagId     String
+  createdAt DateTime @default(now())
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  tag   Tag   @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([agentId, tagId])
+  @@index([tagId])
+}
+
+model WorkflowTag {
+  workflowId String
+  tagId      String
+  createdAt  DateTime @default(now())
+
+  workflow Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  tag      Tag      @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([workflowId, tagId])
+  @@index([tagId])
+}
+
+model JobTag {
+  jobId     String
+  tagId     String
+  createdAt DateTime @default(now())
+
+  job Job @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  tag Tag @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([jobId, tagId])
+  @@index([tagId])
 }
