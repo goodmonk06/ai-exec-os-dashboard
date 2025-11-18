@@ -1,18 +1,30 @@
-const API_BASE_URL = process.env.NEXT_PUBLIC_CORE_API_BASE_URL || "http://localhost:8000";
+import type { ApiResponse } from "./api-response";
+
+const API_BASE_URL = process.env.NEXT_PUBLIC_CORE_API_BASE_URL || "/api";
 
 class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  constructor(
+    public status: number,
+    message: string,
+    public code?: string
+  ) {
     super(message);
     this.name = "ApiError";
   }
 }
 
 async function handleResponse<T>(response: Response): Promise<T> {
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new ApiError(response.status, errorText || response.statusText);
+  const json: ApiResponse<T> = await response.json();
+
+  if (!response.ok || !json.success) {
+    throw new ApiError(
+      response.status,
+      json.success ? "Unknown error" : json.error.message,
+      json.success ? undefined : json.error.code
+    );
   }
-  return response.json();
+
+  return json.data;
 }
 
 export async function apiGet<T>(path: string): Promise<T> {
@@ -21,6 +33,7 @@ export async function apiGet<T>(path: string): Promise<T> {
     headers: {
       "Content-Type": "application/json",
     },
+    cache: "no-store",
   });
   return handleResponse<T>(response);
 }
@@ -39,12 +52,12 @@ export async function apiPost<T, D = unknown>(
   return handleResponse<T>(response);
 }
 
-export async function apiPut<T, D = unknown>(
+export async function apiPatch<T, D = unknown>(
   path: string,
   data?: D
 ): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
-    method: "PUT",
+    method: "PATCH",
     headers: {
       "Content-Type": "application/json",
     },
@@ -53,7 +66,7 @@ export async function apiPut<T, D = unknown>(
   return handleResponse<T>(response);
 }
 
-export async function apiDelete<T>(path: string): Promise<T> {
+export async function apiDelete<T = void>(path: string): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "DELETE",
     headers: {

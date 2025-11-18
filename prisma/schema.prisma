@@ -1,0 +1,73 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum AgentStatus {
+  active
+  inactive
+  error
+}
+
+enum WorkflowStatus {
+  active
+  inactive
+}
+
+enum JobStatus {
+  pending
+  running
+  completed
+  failed
+}
+
+model Agent {
+  id        String      @id @default(cuid())
+  name      String
+  type      String
+  status    AgentStatus @default(active)
+  config    Json?
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  @@index([status])
+}
+
+model Workflow {
+  id          String         @id @default(cuid())
+  name        String
+  description String
+  status      WorkflowStatus @default(active)
+  config      Json?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  jobs        Job[]
+
+  @@index([status])
+}
+
+model Job {
+  id           String    @id @default(cuid())
+  workflowId   String
+  workflowName String
+  status       JobStatus @default(pending)
+  startedAt    DateTime?
+  completedAt  DateTime?
+  error        String?
+  result       Json?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  workflow Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@index([workflowId])
+  @@index([createdAt])
+}
